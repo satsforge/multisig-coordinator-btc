@@ -15,8 +15,8 @@ const dict = {
   'topbar.lang.toSpanish': { es: '🌐 Español', en: '🌐 Español' },
 
   'notice.phase': {
-    es: '<strong>Fase 2 de 3:</strong> armar la wallet multifirma (P2WSH), consultar su saldo, armar una transaccion de gasto y coordinar las firmas de los cosigners hasta juntar el quorum. Todavia <strong>no se conecta a hardware wallets</strong> - eso llega en la fase 3. No hay ninguna clave privada en ningun momento: esta herramienta solo entiende claves publicas extendidas y PSBTs.',
-    en: '<strong>Phase 2 of 3:</strong> build the multisig (P2WSH) wallet, check its balance, build a spending transaction, and coordinate cosigner signatures until the quorum is met. It does not yet <strong>connect to hardware wallets</strong> - that lands in phase 3. There is no private key anywhere at any point: this tool only ever understands extended public keys and PSBTs.',
+    es: '<strong>Fase 3 de 3:</strong> armar la wallet multifirma (P2WSH), consultar su saldo, armar una transaccion de gasto, y coordinar las firmas de los cosigners hasta juntar el quorum - pegando texto, cargando un archivo, o escaneando un codigo QR (BBQr, el formato de Coldcard) con la camara. No hay ninguna clave privada en ningun momento: esta herramienta solo entiende claves publicas extendidas y PSBTs.',
+    en: '<strong>Phase 3 of 3:</strong> build the multisig (P2WSH) wallet, check its balance, build a spending transaction, and coordinate cosigner signatures until the quorum is met - by pasting text, loading a file, or scanning a QR code (BBQr, Coldcard\'s format) with the camera. There is no private key anywhere at any point: this tool only ever understands extended public keys and PSBTs.',
   },
 
   'network.legend': { es: 'Red', en: 'Network' },
@@ -141,6 +141,15 @@ const dict = {
   },
   'send.result.txid': { es: 'TXID', en: 'TXID' },
   'send.result.hexLabel': { es: 'Transaccion firmada (hex)', en: 'Signed transaction (hex)' },
+
+  'qr.scan.button': { es: '📷 Escanear', en: '📷 Scan' },
+  'qr.scanner.title': { es: 'Escanear codigo QR', en: 'Scan QR code' },
+  'qr.scanner.waiting': { es: 'Apunta la camara al codigo QR...', en: 'Point the camera at the QR code...' },
+  'qr.scanner.progress': { es: 'Parte {n} de {total}', en: 'Part {n} of {total}' },
+  'qr.scanner.cancel': { es: 'Cancelar', en: 'Cancel' },
+  'qr.animated.part': { es: 'Parte {n} de {total}', en: 'Part {n} of {total}' },
+  'error.cameraFailed': { es: 'No se pudo acceder a la camara: {msg}', en: 'Could not access the camera: {msg}' },
+  'error.qrDecodeFailed': { es: 'No se pudo decodificar el codigo QR: {msg}', en: 'Could not decode the QR code: {msg}' },
 
   'footer.note': {
     es: 'Solo entiende claves publicas - ninguna clave privada pasa por aca. Consulta 100% desde tu navegador · sin cookies · sin almacenamiento persistente. Revisa el codigo fuente antes de confiarle una wallet real.',

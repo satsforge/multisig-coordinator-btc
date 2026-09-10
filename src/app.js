@@ -1,4 +1,5 @@
 import * as btc from '@scure/btc-signer';
+import { base64, hex } from '@scure/base';
 import QRCode from 'qrcode';
 import {
   parseExtendedPubkey, buildMultisigDescriptor, parseMultisigDescriptor,
@@ -11,6 +12,8 @@ import { annotateUtxosForSpend, buildSpendTx } from './lib/txbuilder.js';
 import {
   decodePsbt, encodePsbt, combineSignedPsbt, signatureProgress, describeSpend, finalizeSpend,
 } from './lib/psbtcoordinate.js';
+import { encodeToQrParts, decodeQrParts, looksLikeBbqrPart } from './lib/qrtransport.js';
+import { QrScanner } from './lib/qrscanner.js';
 import { t, DEFAULT_LANG } from './lib/i18n.js';
 
 const $ = (id) => document.getElementById(id);
@@ -98,6 +101,62 @@ function initTopbar() {
   });
 }
 
+// ---------- QR scanner (shared across setup + collect-signatures) ----------
+
+let qrScanner = null;
+let scanCollected = null;
+let scanOnComplete = null;
+
+function openQrScanner(onComplete) {
+  scanCollected = new Set();
+  scanOnComplete = onComplete;
+  setError('qr-scanner-error', null);
+  $('qr-scanner-status').textContent = tr('qr.scanner.waiting');
+  $('qr-scanner-overlay').hidden = false;
+  if (!qrScanner) qrScanner = new QrScanner($('qr-scanner-video'));
+  qrScanner.start(handleQrDecoded).catch((err) => {
+    setError('qr-scanner-error', tr('error.cameraFailed', { msg: err.message }));
+  });
+}
+
+function closeQrScanner() {
+  if (qrScanner) qrScanner.stop();
+  $('qr-scanner-overlay').hidden = true;
+  scanCollected = null;
+  scanOnComplete = null;
+}
+
+function handleQrDecoded(text) {
+  if (!looksLikeBbqrPart(text)) {
+    finishQrScan(text);
+    return;
+  }
+  scanCollected.add(text);
+  const total = parseInt(text.slice(4, 6), 36);
+  $('qr-scanner-status').textContent = tr('qr.scanner.progress', {
+    n: scanCollected.size, total: Number.isFinite(total) ? total : '?',
+  });
+  if (Number.isFinite(total) && scanCollected.size >= total) {
+    try {
+      const decoded = decodeQrParts([...scanCollected]);
+      finishQrScan(decoded);
+    } catch (err) {
+      setError('qr-scanner-error', tr('error.qrDecodeFailed', { msg: err.message }));
+      scanCollected.clear();
+    }
+  }
+}
+
+function finishQrScan(text) {
+  const onComplete = scanOnComplete;
+  closeQrScanner();
+  if (onComplete) onComplete(text);
+}
+
+function initQrScanner() {
+  $('qr-scanner-cancel-btn').addEventListener('click', closeQrScanner);
+}
+
 // ---------- Setup: network + quorum + cosigner fields ----------
 
 function defaultPath() {
@@ -135,6 +194,9 @@ function renderCosignerFields(n) {
         <label class="field field-xpub">
           <span data-i18n="setup.cosigner.xpub">Clave publica extendida (xpub/Zpub/tpub/Vpub...)</span>
           <textarea class="f-xpub" rows="2" autocomplete="off" spellcheck="false">${prior.xpub ? escapeText(prior.xpub) : ''}</textarea>
+          <div class="file-load-row">
+            <button type="button" class="btn-secondary f-scan" data-i18n="qr.scan.button">📷 Escanear</button>
+          </div>
         </label>
         <label class="field field-xpub">
           <span data-i18n="setup.cosigner.path">Ruta de derivacion</span>
@@ -188,6 +250,15 @@ function initSetupScreen() {
   });
   renderCosignerFields(state.n);
 
+  $('cosigner-list').addEventListener('click', (ev) => {
+    const btn = ev.target.closest('.f-scan');
+    if (!btn) return;
+    const card = btn.closest('.cosigner-card');
+    openQrScanner((text) => {
+      card.querySelector('.f-xpub').value = text;
+    });
+  });
+
   $('mode-manual-btn').addEventListener('click', () => setMode('manual'));
   $('mode-descriptor-btn').addEventListener('click', () => setMode('descriptor'));
 
@@ -211,6 +282,9 @@ function initSetupScreen() {
     } catch (err) {
       setError('setup-error', tr('error.fileReadFailed', { msg: err.message }));
     }
+  });
+  $('descriptor-scan-btn').addEventListener('click', () => {
+    openQrScanner((text) => { $('descriptor-input').value = text; });
   });
 
   $('setup-form').addEventListener('submit', (ev) => {
@@ -413,6 +487,7 @@ function showSendPanels(names) {
 
 async function startSendFlow() {
   if (!state.wallet) return;
+  stopQrAnimation();
   state.send = { feeRates: null, builtTx: null, unsignedPsbtB64: null, collectingTx: null };
   $('send-build-form').reset();
   $('send-amount').disabled = false;
@@ -453,6 +528,7 @@ function initSendBuildPanel() {
   });
 
   $('send-cancel-btn').addEventListener('click', () => {
+    stopQrAnimation();
     state.send = null;
     showScreen('dashboard');
   });
@@ -516,17 +592,56 @@ function renderSendReview(tx) {
   }
 }
 
+// ---------- Animated (BBQr) QR export ----------
+// A single-sig PSBT with one or two inputs usually fits one QR; a real
+// multisig PSBT - witnessScript + one bip32Derivation per cosigner on every
+// input, plus the change output - regularly does not. BBQr (Coldcard's
+// format, also read by Sparrow/other coordinators) splits it across several
+// QR frames that this cycles through automatically instead of silently
+// hiding the code once it no longer fits in one.
+let qrAnimationTimer = null;
+
+function stopQrAnimation() {
+  if (qrAnimationTimer) clearInterval(qrAnimationTimer);
+  qrAnimationTimer = null;
+}
+
+async function renderAnimatedQr(imgEl, labelEl, bytes, fileType) {
+  stopQrAnimation();
+  let parts;
+  try {
+    parts = encodeToQrParts(bytes, fileType);
+  } catch {
+    imgEl.hidden = true;
+    labelEl.textContent = '';
+    return;
+  }
+  const frames = (await Promise.all(
+    parts.map((part) => QRCode.toDataURL(part, { margin: 1, width: 240 }).catch(() => null))
+  )).filter(Boolean);
+  if (!frames.length) {
+    imgEl.hidden = true;
+    labelEl.textContent = '';
+    return;
+  }
+  let i = 0;
+  imgEl.src = frames[0];
+  imgEl.hidden = false;
+  labelEl.textContent = frames.length > 1 ? tr('qr.animated.part', { n: 1, total: frames.length }) : '';
+  if (frames.length > 1) {
+    qrAnimationTimer = setInterval(() => {
+      i = (i + 1) % frames.length;
+      imgEl.src = frames[i];
+      labelEl.textContent = tr('qr.animated.part', { n: i + 1, total: frames.length });
+    }, 600);
+  }
+}
+
 async function renderUnsignedExport() {
   const psbtB64 = encodePsbt(state.send.builtTx);
   state.send.unsignedPsbtB64 = psbtB64;
   $('send-unsigned-psbt').value = psbtB64;
-  try {
-    const dataUrl = await QRCode.toDataURL(psbtB64, { margin: 1, width: 240 });
-    $('send-unsigned-qr').src = dataUrl;
-    $('send-unsigned-qr').hidden = false;
-  } catch {
-    $('send-unsigned-qr').hidden = true; // payload too large for a single QR - text + download still work
-  }
+  await renderAnimatedQr($('send-unsigned-qr'), $('send-unsigned-qr-label'), base64.decode(psbtB64), 'P');
 }
 
 function renderSendProgress() {
@@ -549,6 +664,7 @@ function renderSendProgress() {
 
 function initSendReviewPanel() {
   $('send-review-cancel-btn').addEventListener('click', () => {
+    stopQrAnimation();
     state.send = null;
     showScreen('dashboard');
   });
@@ -610,7 +726,12 @@ function initSendCollectPanel() {
     }
   });
 
+  $('send-signed-scan-btn').addEventListener('click', () => {
+    openQrScanner((text) => { $('send-signed-input').value = text; });
+  });
+
   $('send-collect-back-btn').addEventListener('click', () => {
+    stopQrAnimation();
     state.send = null;
     showScreen('dashboard');
   });
@@ -621,13 +742,7 @@ function initSendCollectPanel() {
       const result = finalizeSpend(state.send.collectingTx);
       $('send-result-txid').textContent = result.txid;
       $('send-result-hex').value = result.hex;
-      try {
-        const dataUrl = await QRCode.toDataURL(result.hex, { margin: 1, width: 240 });
-        $('send-result-qr').src = dataUrl;
-        $('send-result-qr').hidden = false;
-      } catch {
-        $('send-result-qr').hidden = true;
-      }
+      await renderAnimatedQr($('send-result-qr'), $('send-result-qr-label'), hex.decode(result.hex), 'T');
       showSendPanels(['send-result-panel']);
     } catch (err) {
       setError('send-collect-error', tr('error.finalizeFailed', { msg: err.message }));
@@ -648,6 +763,7 @@ function initSendResultPanel() {
   });
 
   $('send-result-back-btn').addEventListener('click', async () => {
+    stopQrAnimation();
     state.send = null;
     await startScan({ m: state.wallet.m, cosigners: state.wallet.cosigners });
   });
@@ -664,6 +780,7 @@ function initSendScreen() {
 
 function init() {
   initTopbar();
+  initQrScanner();
   initSetupScreen();
   initDashboardScreen();
   initSendScreen();

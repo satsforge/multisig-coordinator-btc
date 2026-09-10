@@ -25,7 +25,7 @@
 <section id="screen-setup" class="screen">
   <div class="panel">
     <div class="notice notice-info" data-i18n="notice.phase">
-      <strong>Fase 1 de 3</strong>...
+      <strong>Fase 3 de 3</strong>...
     </div>
 
     <h2 data-i18n="setup.title">Configurar wallet multifirma</h2>
@@ -67,6 +67,7 @@
           <textarea id="descriptor-input" rows="4" autocomplete="off" spellcheck="false"></textarea>
           <div class="file-load-row">
             <button type="button" class="btn-secondary" id="descriptor-file-btn" data-i18n="fileLoad.button">📁 Cargar desde archivo</button>
+            <button type="button" class="btn-secondary" id="descriptor-scan-btn" data-i18n="qr.scan.button">📷 Escanear</button>
             <input type="file" id="descriptor-file-input" accept=".txt,text/plain" hidden>
           </div>
         </label>
@@ -191,7 +192,10 @@
     <label class="field">
       <textarea id="send-unsigned-psbt" class="mono" rows="5" readonly></textarea>
     </label>
-    <div class="qr-wrap"><img id="send-unsigned-qr" alt=""></div>
+    <div class="qr-wrap">
+      <img id="send-unsigned-qr" alt="">
+      <div class="qr-part-label" id="send-unsigned-qr-label"></div>
+    </div>
     <div class="actions-row">
       <button type="button" id="send-unsigned-copy-btn" class="btn-secondary" data-i18n="send.export.copy">Copiar</button>
       <button type="button" id="send-unsigned-download-btn" class="btn-secondary" data-i18n="send.export.download">⬇ Descargar .txt</button>
@@ -205,6 +209,7 @@
       <textarea id="send-signed-input" rows="4" autocomplete="off" spellcheck="false"></textarea>
       <div class="file-load-row">
         <button type="button" class="btn-secondary" id="send-signed-file-btn" data-i18n="fileLoad.button">📁 Cargar desde archivo</button>
+        <button type="button" class="btn-secondary" id="send-signed-scan-btn" data-i18n="qr.scan.button">📷 Escanear</button>
         <input type="file" id="send-signed-file-input" accept=".txt,text/plain,.psbt" hidden>
       </div>
     </label>
@@ -230,7 +235,10 @@
       <span data-i18n="send.result.hexLabel">Transaccion firmada (hex)</span>
       <textarea id="send-result-hex" class="mono" rows="5" readonly></textarea>
     </label>
-    <div class="qr-wrap"><img id="send-result-qr" alt=""></div>
+    <div class="qr-wrap">
+      <img id="send-result-qr" alt="">
+      <div class="qr-part-label" id="send-result-qr-label"></div>
+    </div>
     <div class="actions-row">
       <button type="button" id="send-result-copy-btn" class="btn-secondary" data-i18n="send.export.copy">Copiar</button>
       <button type="button" id="send-result-download-btn" class="btn-secondary" data-i18n="send.export.download">⬇ Descargar .txt</button>
@@ -244,6 +252,18 @@
 <p class="footer-note" data-i18n="footer.note">
   Solo entiende claves publicas...
 </p>
+
+<div id="qr-scanner-overlay" class="qr-scanner-overlay" hidden>
+  <div class="qr-scanner-box">
+    <h2 data-i18n="qr.scanner.title">Escanear codigo QR</h2>
+    <video id="qr-scanner-video" playsinline muted></video>
+    <div class="scan-log" id="qr-scanner-status"></div>
+    <p id="qr-scanner-error" class="error" hidden></p>
+    <div class="actions-row" style="justify-content:center;">
+      <button type="button" id="qr-scanner-cancel-btn" class="btn-secondary" data-i18n="qr.scanner.cancel">Cancelar</button>
+    </div>
+  </div>
+</div>
 
 </div>
 <script>__SCRIPT__</script>

@@ -16,6 +16,8 @@
     "@scure/base": "^2.4.0",
     "@scure/bip32": "^2.4.0",
     "@scure/btc-signer": "^2.4.1",
+    "bbqr": "^1.2.0",
+    "jsqr": "^1.4.0",
     "qrcode": "^1.5.4"
   },
   "devDependencies": {
