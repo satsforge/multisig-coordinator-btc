@@ -42,9 +42,18 @@ export async function scanMultisigWallet(accountNodes, m, network, provider, onP
   return { addresses, totalBalance };
 }
 
+function firstUnusedOnChain(addresses, chain) {
+  const onChain = addresses.filter((a) => a.chain === chain);
+  const firstUnused = onChain.find((a) => a.txCount === 0);
+  return firstUnused ?? onChain[0] ?? null;
+}
+
 /** First unused receive address (chain 0), for the "Recibir" panel. */
 export function firstUnusedReceiveAddress(addresses) {
-  const receiveUsed = addresses.filter((a) => a.chain === RECEIVE_CHAIN);
-  const firstUnused = receiveUsed.find((a) => a.txCount === 0);
-  return firstUnused ?? receiveUsed[0] ?? null;
+  return firstUnusedOnChain(addresses, RECEIVE_CHAIN);
+}
+
+/** First unused change address (chain 1), for a spend's change output. */
+export function firstUnusedChangeAddress(addresses) {
+  return firstUnusedOnChain(addresses, CHANGE_CHAIN);
 }

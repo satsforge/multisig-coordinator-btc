@@ -3,12 +3,18 @@ import QRCode from 'qrcode';
 import {
   parseExtendedPubkey, buildMultisigDescriptor, parseMultisigDescriptor,
 } from './lib/descriptor.js';
-import { createProvider, btcNetwork } from './lib/network.js';
-import { scanMultisigWallet, firstUnusedReceiveAddress, RECEIVE_CHAIN } from './lib/scan.js';
+import { createProvider, btcNetwork, fetchFeeEstimates, fetchUtxosForAddresses } from './lib/network.js';
+import {
+  scanMultisigWallet, firstUnusedReceiveAddress, firstUnusedChangeAddress, RECEIVE_CHAIN,
+} from './lib/scan.js';
+import { annotateUtxosForSpend, buildSpendTx } from './lib/txbuilder.js';
+import {
+  decodePsbt, encodePsbt, combineSignedPsbt, signatureProgress, describeSpend, finalizeSpend,
+} from './lib/psbtcoordinate.js';
 import { t, DEFAULT_LANG } from './lib/i18n.js';
 
 const $ = (id) => document.getElementById(id);
-const SCREENS = ['setup', 'scan', 'dashboard'];
+const SCREENS = ['setup', 'scan', 'dashboard', 'send'];
 
 const state = {
   isTestnet: true,
@@ -18,6 +24,7 @@ const state = {
   n: 3,
   wallet: null, // { m, n, cosigners: [{name, fingerprint, path, xpub, node}], addresses, totalBalance }
   showAllAddresses: false,
+  send: null, // { feeRates, builtTx, unsignedPsbtB64, collectingTx }
 };
 
 function tr(key, vars) {
@@ -336,6 +343,7 @@ function renderDashboard() {
   const { m, n, totalBalance } = state.wallet;
   $('dashboard-quorum-badge').textContent = tr('dashboard.quorum', { m, n });
   $('dashboard-balance').textContent = `${fmtBtc(totalBalance)} BTC`;
+  $('dashboard-send-btn').disabled = totalBalance <= 0n;
   renderReceivePanel();
   renderAddressList();
 }
@@ -360,6 +368,8 @@ function exportText() {
 }
 
 function initDashboardScreen() {
+  $('dashboard-send-btn').addEventListener('click', () => { startSendFlow(); });
+
   $('dashboard-update-btn').addEventListener('click', async () => {
     if (!state.wallet) return;
     await startScan({ m: state.wallet.m, cosigners: state.wallet.cosigners });
@@ -394,12 +404,269 @@ function initDashboardScreen() {
   });
 }
 
+// ---------- Send: build ----------
+
+function showSendPanels(names) {
+  const all = ['send-build-panel', 'send-review-panel', 'send-export-panel', 'send-collect-panel', 'send-result-panel'];
+  for (const id of all) $(id).hidden = !names.includes(id);
+}
+
+async function startSendFlow() {
+  if (!state.wallet) return;
+  state.send = { feeRates: null, builtTx: null, unsignedPsbtB64: null, collectingTx: null };
+  $('send-build-form').reset();
+  $('send-amount').disabled = false;
+  setError('send-build-error', null);
+  for (const key of ['fast', 'medium', 'economy']) $(`fee-${key}-value`).textContent = '...';
+  showSendPanels(['send-build-panel']);
+  showScreen('send');
+
+  try {
+    const provider = createProvider(state.isTestnet);
+    const feeRates = await fetchFeeEstimates(provider);
+    state.send.feeRates = feeRates;
+    for (const key of ['fast', 'medium', 'economy']) {
+      $(`fee-${key}-value`).textContent = feeRates[key] !== null ? `${feeRates[key]} ${tr('send.fee.unit')}` : '';
+    }
+  } catch {
+    // Fee estimates are a convenience; the custom-fee field still works if this fails.
+    for (const key of ['fast', 'medium', 'economy']) $(`fee-${key}-value`).textContent = '';
+  }
+}
+
+function feePerByteFromForm() {
+  const choice = document.querySelector('input[name="fee-choice"]:checked')?.value ?? 'medium';
+  if (choice === 'custom') {
+    const raw = $('fee-custom-input').value.trim();
+    const n = Number(raw);
+    if (!raw || !Number.isFinite(n) || n <= 0) throw new Error('Tarifa personalizada invalida.');
+    return BigInt(Math.round(n));
+  }
+  const fromEstimate = state.send?.feeRates?.[choice];
+  if (fromEstimate) return fromEstimate;
+  return 2n; // sensible fallback if fee estimates failed to load
+}
+
+function initSendBuildPanel() {
+  $('send-max-checkbox').addEventListener('change', () => {
+    $('send-amount').disabled = $('send-max-checkbox').checked;
+  });
+
+  $('send-cancel-btn').addEventListener('click', () => {
+    state.send = null;
+    showScreen('dashboard');
+  });
+
+  $('send-build-form').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    setError('send-build-error', null);
+    try {
+      const destinationAddress = $('send-destination').value.trim();
+      if (!destinationAddress) throw new Error('Falta la direccion de destino.');
+      const sendMax = $('send-max-checkbox').checked;
+      let amountSats = 0n;
+      if (!sendMax) {
+        const raw = $('send-amount').value.trim();
+        if (!raw || Number(raw) <= 0) throw new Error('Monto invalido.');
+        amountSats = btc.Decimal.decode(raw);
+      }
+      const feePerByte = feePerByteFromForm();
+
+      const fundedEntries = state.wallet.addresses.filter((a) => a.balance > 0n);
+      if (!fundedEntries.length) throw new Error('Esta wallet no tiene UTXOs para gastar.');
+      const provider = createProvider(state.isTestnet);
+      const rawUtxos = await fetchUtxosForAddresses(provider, fundedEntries);
+      const utxos = annotateUtxosForSpend(rawUtxos, state.wallet, state.network);
+
+      const changeEntry = firstUnusedChangeAddress(state.wallet.addresses);
+      const built = buildSpendTx({
+        wallet: state.wallet, utxos, destinationAddress, amountSats, feePerByte,
+        changeEntry, network: state.network, sendMax,
+      });
+      if (!built) throw new Error(tr('error.insufficientFunds'));
+
+      state.send.builtTx = built.tx;
+      renderSendReview(built.tx);
+      showSendPanels(['send-review-panel']);
+    } catch (err) {
+      setError('send-build-error', tr('error.sendBuildFailed', { msg: err.message }));
+    }
+  });
+}
+
+// ---------- Send: review + export ----------
+
+function renderSendReview(tx) {
+  const summary = describeSpend(tx, state.network);
+  $('review-inputs-total').textContent = `${fmtBtc(summary.inputsTotal)} BTC`;
+  $('review-outputs-total').textContent = `${fmtBtc(summary.outputsTotal)} BTC`;
+  $('review-fee').textContent = `${fmtBtc(summary.fee)} BTC`;
+
+  const list = $('review-outputs');
+  list.innerHTML = '';
+  for (const output of summary.outputs) {
+    const li = document.createElement('li');
+    li.className = 'output-row';
+    const address = output.address ?? '';
+    li.innerHTML = `
+      <span class="output-address">${address}${output.isChange ? `<span class="output-change-tag">${tr('send.review.change')}</span>` : ''}</span>
+      <span class="output-amount">${fmtBtc(output.amount)} BTC</span>
+    `;
+    list.appendChild(li);
+  }
+}
+
+async function renderUnsignedExport() {
+  const psbtB64 = encodePsbt(state.send.builtTx);
+  state.send.unsignedPsbtB64 = psbtB64;
+  $('send-unsigned-psbt').value = psbtB64;
+  try {
+    const dataUrl = await QRCode.toDataURL(psbtB64, { margin: 1, width: 240 });
+    $('send-unsigned-qr').src = dataUrl;
+    $('send-unsigned-qr').hidden = false;
+  } catch {
+    $('send-unsigned-qr').hidden = true; // payload too large for a single QR - text + download still work
+  }
+}
+
+function renderSendProgress() {
+  const { collectingTx } = state.send;
+  const { perInput, ready } = signatureProgress(collectingTx, state.wallet.m);
+  const list = $('send-progress-list');
+  list.innerHTML = '';
+  for (const row of perInput) {
+    const li = document.createElement('li');
+    li.className = `address-row progress-row${row.finalized || row.count >= state.wallet.m ? ' progress-done' : ''}`;
+    const text = row.finalized || row.count >= state.wallet.m
+      ? tr('send.collect.progress.done', { i: row.index })
+      : tr('send.collect.progress.input', { i: row.index, count: row.count, m: state.wallet.m });
+    li.innerHTML = `<span>${text}</span>`;
+    list.appendChild(li);
+  }
+  $('send-finalize-btn').disabled = !ready;
+  return ready;
+}
+
+function initSendReviewPanel() {
+  $('send-review-cancel-btn').addEventListener('click', () => {
+    state.send = null;
+    showScreen('dashboard');
+  });
+
+  $('send-export-btn').addEventListener('click', async () => {
+    await renderUnsignedExport();
+    state.send.collectingTx = decodePsbt(state.send.unsignedPsbtB64);
+    $('send-signed-input').value = '';
+    setError('send-collect-error', null);
+    renderSendProgress();
+    showSendPanels(['send-export-panel', 'send-collect-panel']);
+  });
+
+  $('send-unsigned-copy-btn').addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText($('send-unsigned-psbt').value);
+      flashButton('send-unsigned-copy-btn', tr('send.export.copied'));
+    } catch { /* clipboard may be unavailable; text is selectable regardless */ }
+  });
+
+  $('send-unsigned-download-btn').addEventListener('click', () => {
+    downloadText('multisig-unsigned-psbt.txt', $('send-unsigned-psbt').value);
+  });
+}
+
+function flashButton(id, tempText) {
+  const btnEl = $(id);
+  const original = btnEl.textContent;
+  btnEl.textContent = tempText;
+  setTimeout(() => { btnEl.textContent = original; }, 1500);
+}
+
+// ---------- Send: collect signatures + finalize ----------
+
+function initSendCollectPanel() {
+  const fileInput = $('send-signed-file-input');
+  $('send-signed-file-btn').addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', async () => {
+    const file = fileInput.files[0];
+    fileInput.value = '';
+    if (!file) return;
+    try {
+      const text = await file.text();
+      $('send-signed-input').value = text.trim();
+    } catch (err) {
+      setError('send-collect-error', tr('error.fileReadFailed', { msg: err.message }));
+    }
+  });
+
+  $('send-collect-add-btn').addEventListener('click', () => {
+    setError('send-collect-error', null);
+    try {
+      const incoming = decodePsbt($('send-signed-input').value);
+      combineSignedPsbt(state.send.collectingTx, incoming);
+      $('send-signed-input').value = '';
+      renderSendProgress();
+    } catch (err) {
+      setError('send-collect-error', tr('error.collectFailed', { msg: err.message }));
+    }
+  });
+
+  $('send-collect-back-btn').addEventListener('click', () => {
+    state.send = null;
+    showScreen('dashboard');
+  });
+
+  $('send-finalize-btn').addEventListener('click', async () => {
+    setError('send-collect-error', null);
+    try {
+      const result = finalizeSpend(state.send.collectingTx);
+      $('send-result-txid').textContent = result.txid;
+      $('send-result-hex').value = result.hex;
+      try {
+        const dataUrl = await QRCode.toDataURL(result.hex, { margin: 1, width: 240 });
+        $('send-result-qr').src = dataUrl;
+        $('send-result-qr').hidden = false;
+      } catch {
+        $('send-result-qr').hidden = true;
+      }
+      showSendPanels(['send-result-panel']);
+    } catch (err) {
+      setError('send-collect-error', tr('error.finalizeFailed', { msg: err.message }));
+    }
+  });
+}
+
+function initSendResultPanel() {
+  $('send-result-copy-btn').addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText($('send-result-hex').value);
+      flashButton('send-result-copy-btn', tr('send.export.copied'));
+    } catch { /* clipboard may be unavailable; text is selectable regardless */ }
+  });
+
+  $('send-result-download-btn').addEventListener('click', () => {
+    downloadText('multisig-signed-tx.txt', $('send-result-hex').value);
+  });
+
+  $('send-result-back-btn').addEventListener('click', async () => {
+    state.send = null;
+    await startScan({ m: state.wallet.m, cosigners: state.wallet.cosigners });
+  });
+}
+
+function initSendScreen() {
+  initSendBuildPanel();
+  initSendReviewPanel();
+  initSendCollectPanel();
+  initSendResultPanel();
+}
+
 // ---------- Boot ----------
 
 function init() {
   initTopbar();
   initSetupScreen();
   initDashboardScreen();
+  initSendScreen();
   applyTranslations();
   showScreen('setup');
 }

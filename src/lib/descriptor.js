@@ -160,6 +160,14 @@ export function formatPathForDescriptor(pathText) {
     .join('/');
 }
 
+// BIP32Der (the PSBT bip32Derivation field) stores each path segment as one
+// raw 32-bit number, hardened segments folded in via the top bit (BIP32's
+// own convention - the same one HDKey.deriveChild expects).
+const HARDENED_OFFSET = 0x80000000;
+export function numericPath(pathText) {
+  return parsePath(pathText).map(({ index, hardened }) => (hardened ? index + HARDENED_OFFSET : index));
+}
+
 // ---------- Building a descriptor from cosigners ----------
 
 /**

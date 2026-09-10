@@ -98,7 +98,8 @@
       <span class="balance-value" id="dashboard-balance">0 BTC</span>
     </div>
     <div class="actions-row">
-      <button type="button" id="dashboard-update-btn" class="btn-primary" data-i18n="dashboard.update">Actualizar</button>
+      <button type="button" id="dashboard-send-btn" class="btn-primary" data-i18n="dashboard.send" disabled>Enviar</button>
+      <button type="button" id="dashboard-update-btn" class="btn-secondary" data-i18n="dashboard.update">Actualizar</button>
       <button type="button" id="dashboard-new-btn" class="btn-secondary" data-i18n="dashboard.newWallet">Nueva wallet</button>
     </div>
   </div>
@@ -128,6 +129,113 @@
       <button type="button" id="addresses-toggle-btn" class="btn-secondary btn-small"></button>
     </div>
     <ul class="address-list" id="address-list"></ul>
+  </div>
+</section>
+
+<section id="screen-send" class="screen" hidden>
+  <div class="panel" id="send-build-panel">
+    <h2 data-i18n="send.build.title">Armar transaccion</h2>
+    <form id="send-build-form">
+      <label class="field">
+        <span data-i18n="send.destination.label">Direccion de destino</span>
+        <input type="text" id="send-destination" autocomplete="off" spellcheck="false">
+      </label>
+      <label class="field">
+        <span data-i18n="send.amount.label">Monto (BTC)</span>
+        <input type="text" id="send-amount" autocomplete="off" spellcheck="false" inputmode="decimal">
+      </label>
+      <label class="checkbox-field">
+        <input type="checkbox" id="send-max-checkbox">
+        <span data-i18n="send.sendMax.label">Enviar todo el saldo disponible</span>
+      </label>
+
+      <fieldset>
+        <legend data-i18n="send.fee.label">Tarifa</legend>
+        <label><input type="radio" name="fee-choice" id="fee-fast" value="fast" checked> <span data-i18n="send.fee.fast">Rapida (~1 bloque)</span> <span class="fee-value" id="fee-fast-value"></span></label>
+        <label><input type="radio" name="fee-choice" id="fee-medium" value="medium"> <span data-i18n="send.fee.medium">Media (~1 hora)</span> <span class="fee-value" id="fee-medium-value"></span></label>
+        <label><input type="radio" name="fee-choice" id="fee-economy" value="economy"> <span data-i18n="send.fee.economy">Economica (~1 dia)</span> <span class="fee-value" id="fee-economy-value"></span></label>
+        <label>
+          <input type="radio" name="fee-choice" id="fee-custom" value="custom">
+          <span data-i18n="send.fee.custom">Personalizada (sats/vB)</span>
+          <input type="text" id="fee-custom-input" inputmode="decimal" style="width:80px;">
+        </label>
+      </fieldset>
+
+      <p id="send-build-error" class="error" hidden></p>
+
+      <div class="actions-row">
+        <button type="submit" class="btn-primary" data-i18n="send.build.button">Armar</button>
+        <button type="button" id="send-cancel-btn" class="btn-secondary" data-i18n="send.cancel">Cancelar</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="panel" id="send-review-panel" hidden>
+    <h2 data-i18n="send.review.title">Revisar antes de exportar</h2>
+    <dl class="review-list">
+      <dt data-i18n="send.review.inputsTotal">Total de entradas</dt><dd id="review-inputs-total"></dd>
+      <dt data-i18n="send.review.outputsTotal">Total de salidas</dt><dd id="review-outputs-total"></dd>
+      <dt data-i18n="send.review.fee">Comision</dt><dd id="review-fee"></dd>
+    </dl>
+    <h2 data-i18n="send.review.outputs" style="font-size:14px;">Salidas</h2>
+    <ul class="output-list" id="review-outputs"></ul>
+    <div class="actions-row">
+      <button type="button" id="send-export-btn" class="btn-primary" data-i18n="send.review.export">Exportar PSBT sin firmar</button>
+      <button type="button" id="send-review-cancel-btn" class="btn-secondary" data-i18n="send.cancel">Cancelar</button>
+    </div>
+  </div>
+
+  <div class="panel" id="send-export-panel" hidden>
+    <h2 data-i18n="send.export.title">PSBT sin firmar</h2>
+    <p class="hint" data-i18n="send.export.hint">Llevá este PSBT a cada cosigner...</p>
+    <label class="field">
+      <textarea id="send-unsigned-psbt" class="mono" rows="5" readonly></textarea>
+    </label>
+    <div class="qr-wrap"><img id="send-unsigned-qr" alt=""></div>
+    <div class="actions-row">
+      <button type="button" id="send-unsigned-copy-btn" class="btn-secondary" data-i18n="send.export.copy">Copiar</button>
+      <button type="button" id="send-unsigned-download-btn" class="btn-secondary" data-i18n="send.export.download">⬇ Descargar .txt</button>
+    </div>
+  </div>
+
+  <div class="panel" id="send-collect-panel" hidden>
+    <h2 data-i18n="send.collect.title">Juntar firmas de los cosigners</h2>
+    <label class="field">
+      <span data-i18n="send.collect.label">PSBT firmado por un cosigner</span>
+      <textarea id="send-signed-input" rows="4" autocomplete="off" spellcheck="false"></textarea>
+      <div class="file-load-row">
+        <button type="button" class="btn-secondary" id="send-signed-file-btn" data-i18n="fileLoad.button">📁 Cargar desde archivo</button>
+        <input type="file" id="send-signed-file-input" accept=".txt,text/plain,.psbt" hidden>
+      </div>
+    </label>
+    <p id="send-collect-error" class="error" hidden></p>
+    <button type="button" id="send-collect-add-btn" class="btn-primary" data-i18n="send.collect.add">Agregar firma</button>
+
+    <h2 data-i18n="send.collect.progress.title" style="font-size:14px; margin-top:1.25rem;">Progreso</h2>
+    <ul class="address-list" id="send-progress-list"></ul>
+
+    <div class="actions-row">
+      <button type="button" id="send-finalize-btn" class="btn-primary" disabled data-i18n="send.collect.finalize">Finalizar y exportar</button>
+      <button type="button" id="send-collect-back-btn" class="btn-secondary" data-i18n="send.back">Volver al dashboard</button>
+    </div>
+  </div>
+
+  <div class="panel" id="send-result-panel" hidden>
+    <h2 data-i18n="send.result.title">Transaccion lista para transmitir</h2>
+    <p class="hint" data-i18n="send.result.hint">Todas las firmas necesarias estan presentes...</p>
+    <dl class="review-list">
+      <dt data-i18n="send.result.txid">TXID</dt><dd id="send-result-txid" class="mono"></dd>
+    </dl>
+    <label class="field">
+      <span data-i18n="send.result.hexLabel">Transaccion firmada (hex)</span>
+      <textarea id="send-result-hex" class="mono" rows="5" readonly></textarea>
+    </label>
+    <div class="qr-wrap"><img id="send-result-qr" alt=""></div>
+    <div class="actions-row">
+      <button type="button" id="send-result-copy-btn" class="btn-secondary" data-i18n="send.export.copy">Copiar</button>
+      <button type="button" id="send-result-download-btn" class="btn-secondary" data-i18n="send.export.download">⬇ Descargar .txt</button>
+      <button type="button" id="send-result-back-btn" class="btn-primary" data-i18n="send.back">Volver al dashboard</button>
+    </div>
   </div>
 </section>
 

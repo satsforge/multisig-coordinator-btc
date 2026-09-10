@@ -15,8 +15,8 @@ const dict = {
   'topbar.lang.toSpanish': { es: '🌐 Español', en: '🌐 Español' },
 
   'notice.phase': {
-    es: '<strong>Fase 1 de 3:</strong> armar la wallet multifirma (P2WSH) a partir de las claves publicas de cada cosigner y consultar su saldo. Todavia <strong>no arma ni firma transacciones</strong> - eso llega en la fase 2. No hay ninguna clave privada en ningun momento: esta herramienta solo entiende claves publicas extendidas.',
-    en: '<strong>Phase 1 of 3:</strong> build the multisig (P2WSH) wallet from each cosigner\'s public key and check its balance. It does not yet <strong>build or sign transactions</strong> - that lands in phase 2. There is no private key anywhere at any point: this tool only ever understands extended public keys.',
+    es: '<strong>Fase 2 de 3:</strong> armar la wallet multifirma (P2WSH), consultar su saldo, armar una transaccion de gasto y coordinar las firmas de los cosigners hasta juntar el quorum. Todavia <strong>no se conecta a hardware wallets</strong> - eso llega en la fase 3. No hay ninguna clave privada en ningun momento: esta herramienta solo entiende claves publicas extendidas y PSBTs.',
+    en: '<strong>Phase 2 of 3:</strong> build the multisig (P2WSH) wallet, check its balance, build a spending transaction, and coordinate cosigner signatures until the quorum is met. It does not yet <strong>connect to hardware wallets</strong> - that lands in phase 3. There is no private key anywhere at any point: this tool only ever understands extended public keys and PSBTs.',
   },
 
   'network.legend': { es: 'Red', en: 'Network' },
@@ -86,6 +86,61 @@ const dict = {
   'dashboard.addresses.empty': { es: 'Ninguna direccion tiene saldo todavia.', en: 'No address has a balance yet.' },
   'dashboard.addresses.showAll': { es: 'Mostrar todas ({n})', en: 'Show all ({n})' },
   'dashboard.addresses.showFunded': { es: 'Mostrar solo con saldo', en: 'Show only funded' },
+  'dashboard.send': { es: 'Enviar', en: 'Send' },
+
+  'send.build.title': { es: 'Armar transaccion', en: 'Build transaction' },
+  'send.destination.label': { es: 'Direccion de destino', en: 'Destination address' },
+  'send.amount.label': { es: 'Monto (BTC)', en: 'Amount (BTC)' },
+  'send.sendMax.label': { es: 'Enviar todo el saldo disponible', en: 'Send the entire available balance' },
+  'send.fee.label': { es: 'Tarifa', en: 'Fee rate' },
+  'send.fee.fast': { es: 'Rapida (~1 bloque)', en: 'Fast (~1 block)' },
+  'send.fee.medium': { es: 'Media (~1 hora)', en: 'Medium (~1 hour)' },
+  'send.fee.economy': { es: 'Economica (~1 dia)', en: 'Economy (~1 day)' },
+  'send.fee.custom': { es: 'Personalizada (sats/vB)', en: 'Custom (sats/vB)' },
+  'send.fee.unit': { es: 'sats/vB', en: 'sats/vB' },
+  'send.build.button': { es: 'Armar', en: 'Build' },
+  'send.cancel': { es: 'Cancelar', en: 'Cancel' },
+  'send.back': { es: 'Volver al dashboard', en: 'Back to dashboard' },
+  'error.sendBuildFailed': { es: 'No se pudo armar la transaccion: {msg}', en: 'Could not build the transaction: {msg}' },
+  'error.insufficientFunds': {
+    es: 'Los UTXOs seleccionados no alcanzan para cubrir el monto mas la comision.',
+    en: 'The selected UTXOs cannot cover the amount plus the fee.',
+  },
+
+  'send.review.title': { es: 'Revisar antes de exportar', en: 'Review before exporting' },
+  'send.review.inputsTotal': { es: 'Total de entradas', en: 'Total inputs' },
+  'send.review.outputsTotal': { es: 'Total de salidas', en: 'Total outputs' },
+  'send.review.fee': { es: 'Comision', en: 'Fee' },
+  'send.review.outputs': { es: 'Salidas', en: 'Outputs' },
+  'send.review.change': { es: '(cambio, es de esta wallet)', en: '(change, belongs to this wallet)' },
+  'send.review.export': { es: 'Exportar PSBT sin firmar', en: 'Export unsigned PSBT' },
+
+  'send.export.title': { es: 'PSBT sin firmar', en: 'Unsigned PSBT' },
+  'send.export.hint': {
+    es: 'Llevá este PSBT a cada cosigner para que lo firme con su propio firmador (por ejemplo PSBT Signer BTC, o un hardware wallet que exporte PSBTs firmados). Cada cosigner firma por separado, empezando siempre desde este mismo PSBT sin firmar.',
+    en: 'Take this PSBT to each cosigner so they can sign it with their own signer (for example PSBT Signer BTC, or a hardware wallet that exports signed PSBTs). Each cosigner signs separately, always starting from this same unsigned PSBT.',
+  },
+  'send.export.copy': { es: 'Copiar', en: 'Copy' },
+  'send.export.copied': { es: 'Copiado!', en: 'Copied!' },
+  'send.export.download': { es: '⬇ Descargar .txt', en: '⬇ Download .txt' },
+
+  'send.collect.title': { es: 'Juntar firmas de los cosigners', en: 'Collect cosigner signatures' },
+  'send.collect.label': { es: 'PSBT firmado por un cosigner', en: 'PSBT signed by one cosigner' },
+  'send.collect.add': { es: 'Agregar firma', en: 'Add signature' },
+  'send.collect.progress.title': { es: 'Progreso', en: 'Progress' },
+  'send.collect.progress.input': { es: 'Entrada {i}: {count} de {m} firmas', en: 'Input {i}: {count} of {m} signatures' },
+  'send.collect.progress.done': { es: 'Entrada {i}: completa', en: 'Input {i}: complete' },
+  'send.collect.finalize': { es: 'Finalizar y exportar', en: 'Finalize and export' },
+  'error.collectFailed': { es: 'No se pudo agregar esa firma: {msg}', en: 'Could not add that signature: {msg}' },
+  'error.finalizeFailed': { es: 'No se pudo finalizar: {msg}', en: 'Could not finalize: {msg}' },
+
+  'send.result.title': { es: 'Transaccion lista para transmitir', en: 'Transaction ready to broadcast' },
+  'send.result.hint': {
+    es: 'Todas las firmas necesarias estan presentes. Este es el hex final - llevalo a BTC Airgap Bridge (o a cualquier nodo/wallet que sepa transmitir) para difundirlo a la red. Esta herramienta nunca se conecta a internet para transmitir nada.',
+    en: 'All required signatures are present. This is the final hex - take it to BTC Airgap Bridge (or any node/wallet that can broadcast) to spread it to the network. This tool never connects to the internet to broadcast anything.',
+  },
+  'send.result.txid': { es: 'TXID', en: 'TXID' },
+  'send.result.hexLabel': { es: 'Transaccion firmada (hex)', en: 'Signed transaction (hex)' },
 
   'footer.note': {
     es: 'Solo entiende claves publicas - ninguna clave privada pasa por aca. Consulta 100% desde tu navegador · sin cookies · sin almacenamiento persistente. Revisa el codigo fuente antes de confiarle una wallet real.',

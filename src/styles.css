@@ -145,6 +145,20 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 .address-balance { color: var(--ok); font-weight: 600; }
 .address-empty { color: var(--text-dim); font-size: 0.9rem; padding: 0.5rem 0; }
 
+.output-list { list-style: none; padding: 0; margin: 0.5rem 0 1rem; }
+.output-row {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 0.75rem;
+  background: var(--bg-panel-2); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 0.6rem 0.8rem; margin-bottom: 0.5rem; font-size: 0.85rem;
+}
+.output-address { font-family: var(--mono); word-break: break-all; }
+.output-change-tag { color: var(--ok); font-size: 0.75rem; display: block; margin-top: 0.15rem; }
+.output-amount { white-space: nowrap; font-weight: 600; }
+
+.fee-value { color: var(--text-dim); font-size: 0.8rem; }
+.progress-row { display: flex; justify-content: space-between; }
+.progress-row.progress-done .progress-count { color: var(--ok); }
+
 a { color: var(--accent); }
 .footer-note { font-size: 12px; color: var(--text-dim); text-align: center; margin-top: 30px; }
 
