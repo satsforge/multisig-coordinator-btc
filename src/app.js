@@ -2,7 +2,7 @@ import * as btc from '@scure/btc-signer';
 import { base64, hex } from '@scure/base';
 import QRCode from 'qrcode';
 import {
-  parseExtendedPubkey, buildMultisigDescriptor, parseMultisigDescriptor,
+  parseCosignerXpub, assertNoDuplicateCosigners, buildMultisigDescriptor, parseMultisigDescriptor,
 } from './lib/descriptor.js';
 import { createProvider, btcNetwork, fetchFeeEstimates, fetchUtxosForAddresses } from './lib/network.js';
 import {
@@ -107,8 +107,17 @@ let qrScanner = null;
 let scanCollected = null;
 let scanOnComplete = null;
 
+// Everything the camera feeds in is untrusted: whatever happens to be on the
+// screen or paper being pointed at. BBQr's own header caps a sequence at
+// 'zz' base36 = 1296 parts, and each QR tops out around 3KB of payload, so
+// anything past these bounds is not a real sequence being scanned - it's a
+// stream of junk (or a hostile display) that would otherwise grow the
+// collected set without limit.
+const MAX_QR_PARTS = 1296;
+const MAX_QR_TOTAL_CHARS = 1296 * 4096;
+
 function openQrScanner(onComplete) {
-  scanCollected = new Set();
+  scanCollected = new Map(); // part index -> raw part text
   scanOnComplete = onComplete;
   setError('qr-scanner-error', null);
   $('qr-scanner-status').textContent = tr('qr.scanner.waiting');
@@ -131,14 +140,34 @@ function handleQrDecoded(text) {
     finishQrScan(text);
     return;
   }
-  scanCollected.add(text);
+  // BBQr header: "B$" + encoding + fileType + total(2, base36) + index(2, base36).
   const total = parseInt(text.slice(4, 6), 36);
+  const partIndex = parseInt(text.slice(6, 8), 36);
+  if (!Number.isFinite(total) || !Number.isFinite(partIndex) || total < 1 || total > MAX_QR_PARTS
+      || partIndex < 0 || partIndex >= total) {
+    setError('qr-scanner-error', tr('error.qrDecodeFailed', { msg: 'cabecera BBQr invalida' }));
+    return;
+  }
+
+  // Key by part index, not by raw string: two slightly different reads of the
+  // same part must not both count toward "we have them all".
+  scanCollected.set(partIndex, text);
+
+  let totalChars = 0;
+  for (const part of scanCollected.values()) totalChars += part.length;
+  if (totalChars > MAX_QR_TOTAL_CHARS) {
+    setError('qr-scanner-error', tr('error.qrDecodeFailed', { msg: 'secuencia demasiado grande' }));
+    scanCollected.clear();
+    return;
+  }
+
   $('qr-scanner-status').textContent = tr('qr.scanner.progress', {
-    n: scanCollected.size, total: Number.isFinite(total) ? total : '?',
+    n: scanCollected.size, total,
   });
-  if (Number.isFinite(total) && scanCollected.size >= total) {
+  if (scanCollected.size >= total) {
     try {
-      const decoded = decodeQrParts([...scanCollected]);
+      const ordered = [...scanCollected.entries()].sort((a, b) => a[0] - b[0]).map(([, part]) => part);
+      const decoded = decodeQrParts(ordered);
       finishQrScan(decoded);
     } catch (err) {
       setError('qr-scanner-error', tr('error.qrDecodeFailed', { msg: err.message }));
@@ -307,9 +336,10 @@ function buildWalletFromForm() {
       fingerprint: c.fingerprint,
       path: c.path,
       xpub: c.xpub,
-      node: parseExtendedPubkey(c.xpub, state.isTestnet),
+      node: parseCosignerXpub(c.xpub, c.path, state.isTestnet),
     }));
-    return { m: parsed.m, cosigners };
+    assertNoDuplicateCosigners(cosigners);
+    return { m: parsed.m, cosigners, checksumVerified: parsed.checksumVerified };
   }
 
   const m = parseInt($('quorum-m').value, 10);
@@ -327,19 +357,13 @@ function buildWalletFromForm() {
       fingerprint: c.fingerprint.trim().toLowerCase(),
       path: c.path.trim(),
       xpub: c.xpub.trim(),
-      node: parseExtendedPubkey(c.xpub, state.isTestnet),
+      node: parseCosignerXpub(c.xpub.trim(), c.path.trim(), state.isTestnet),
     };
   });
 
-  // Every cosigner's xpub must be genuinely different - repeating one would
-  // silently turn an "M-of-N" wallet into something weaker than intended.
-  const seen = new Set();
-  for (const c of cosigners) {
-    if (seen.has(c.xpub)) throw new Error(`La clave publica del cosigner "${c.name}" esta repetida.`);
-    seen.add(c.xpub);
-  }
+  assertNoDuplicateCosigners(cosigners);
 
-  return { m, cosigners };
+  return { m, cosigners, checksumVerified: true }; // manual entry has no descriptor checksum to speak of
 }
 
 // ---------- Scan ----------
@@ -348,7 +372,7 @@ function chainLabel(chain) {
   return tr(chain === RECEIVE_CHAIN ? 'scan.chain.receive' : 'scan.chain.change');
 }
 
-async function startScan({ m, cosigners }) {
+async function startScan({ m, cosigners, checksumVerified = true }) {
   showScreen('scan');
   const progressEl = $('scan-progress');
   try {
@@ -357,7 +381,7 @@ async function startScan({ m, cosigners }) {
     const { addresses, totalBalance } = await scanMultisigWallet(nodes, m, state.network, provider, ({ chain, index }) => {
       progressEl.textContent = tr('scan.progress', { chainLabel: chainLabel(chain), index });
     });
-    state.wallet = { m, n: cosigners.length, cosigners, addresses, totalBalance };
+    state.wallet = { m, n: cosigners.length, cosigners, addresses, totalBalance, checksumVerified };
     state.showAllAddresses = false;
     renderDashboard();
     showScreen('dashboard');
@@ -371,7 +395,14 @@ async function startScan({ m, cosigners }) {
 
 async function renderReceivePanel() {
   const next = firstUnusedReceiveAddress(state.wallet.addresses);
-  if (!next) return;
+  if (!next) {
+    // Shouldn't happen under normal scanning (see scan.js's comment on
+    // firstUnusedOnChain), but clear stale content rather than silently
+    // leaving a previous wallet's address on screen if it ever does.
+    $('receive-address').textContent = '';
+    $('receive-qr').hidden = true;
+    return;
+  }
   $('receive-address').textContent = next.address;
   try {
     const dataUrl = await QRCode.toDataURL(next.address, { margin: 1, width: 220 });
@@ -414,10 +445,19 @@ function renderAddressList() {
 }
 
 function renderDashboard() {
-  const { m, n, totalBalance } = state.wallet;
+  const { m, n, totalBalance, checksumVerified } = state.wallet;
   $('dashboard-quorum-badge').textContent = tr('dashboard.quorum', { m, n });
   $('dashboard-balance').textContent = `${fmtBtc(totalBalance)} BTC`;
   $('dashboard-send-btn').disabled = totalBalance <= 0n;
+  // A descriptor pasted without its "#checksum" is still accepted (some
+  // tools omit it, or a human retypes it by hand) - but with no checksum, a
+  // single altered/mistyped character in the body is indistinguishable from
+  // a correct one, and this descriptor alone determines every address this
+  // wallet will ever recognize as its own. Stays visible for the whole
+  // session rather than a one-time dismissible notice, since the risk
+  // (funding an address derived from a silently-wrong descriptor) doesn't
+  // go away once the wallet screen loads.
+  $('dashboard-checksum-warning').hidden = checksumVerified !== false;
   renderReceivePanel();
   renderAddressList();
 }
@@ -446,7 +486,7 @@ function initDashboardScreen() {
 
   $('dashboard-update-btn').addEventListener('click', async () => {
     if (!state.wallet) return;
-    await startScan({ m: state.wallet.m, cosigners: state.wallet.cosigners });
+    await startScan({ m: state.wallet.m, cosigners: state.wallet.cosigners, checksumVerified: state.wallet.checksumVerified });
   });
 
   $('dashboard-new-btn').addEventListener('click', () => {
@@ -518,8 +558,18 @@ function feePerByteFromForm() {
     return BigInt(Math.round(n));
   }
   const fromEstimate = state.send?.feeRates?.[choice];
-  if (fromEstimate) return fromEstimate;
-  return 2n; // sensible fallback if fee estimates failed to load
+  // fetchFeeEstimates (network.js) returns null per-tier when its own
+  // request failed - silently substituting a guessed rate here would build
+  // a transaction at a fee the user never actually chose, with nothing on
+  // screen to say so. Fail loudly instead: the form's own error banner
+  // already surfaces whatever this throws, and "usá una tarifa
+  // personalizada" is a real, always-available way forward.
+  if (!fromEstimate) {
+    throw new Error(
+      'No se pudo obtener una estimacion de comision para esta opcion. Reintenta, o usa "Personalizada" con un valor en sats/vB.'
+    );
+  }
+  return fromEstimate;
 }
 
 function initSendBuildPanel() {
@@ -555,6 +605,11 @@ function initSendBuildPanel() {
       const utxos = annotateUtxosForSpend(rawUtxos, state.wallet, state.network);
 
       const changeEntry = firstUnusedChangeAddress(state.wallet.addresses);
+      if (!changeEntry) {
+        throw new Error(
+          'No se encontro una direccion de cambio sin usar - esto no deberia pasar; probá "Actualizar" en el dashboard para re-escanear la wallet.'
+        );
+      }
       const built = buildSpendTx({
         wallet: state.wallet, utxos, destinationAddress, amountSats, feePerByte,
         changeEntry, network: state.network, sendMax,
@@ -562,7 +617,8 @@ function initSendBuildPanel() {
       if (!built) throw new Error(tr('error.insufficientFunds'));
 
       state.send.builtTx = built.tx;
-      renderSendReview(built.tx);
+      state.send.changeScript = built.changeScript ?? null; // absent for "send all" - no change output exists
+      renderSendReview(built.tx, state.send.changeScript);
       showSendPanels(['send-review-panel']);
     } catch (err) {
       setError('send-build-error', tr('error.sendBuildFailed', { msg: err.message }));
@@ -572,8 +628,8 @@ function initSendBuildPanel() {
 
 // ---------- Send: review + export ----------
 
-function renderSendReview(tx) {
-  const summary = describeSpend(tx, state.network);
+function renderSendReview(tx, changeScript) {
+  const summary = describeSpend(tx, state.network, changeScript);
   $('review-inputs-total').textContent = `${fmtBtc(summary.inputsTotal)} BTC`;
   $('review-outputs-total').textContent = `${fmtBtc(summary.outputsTotal)} BTC`;
   $('review-fee').textContent = `${fmtBtc(summary.fee)} BTC`;
@@ -590,6 +646,18 @@ function renderSendReview(tx) {
     `;
     list.appendChild(li);
   }
+
+  const warningEl = $('review-fee-warning');
+  const ackWrap = $('review-fee-ack-wrap');
+  warningEl.hidden = !summary.feeWarning;
+  ackWrap.hidden = !summary.feeWarning;
+  $('review-fee-ack-checkbox').checked = false;
+  syncSendExportButton();
+}
+
+function syncSendExportButton() {
+  const needsAck = !$('review-fee-ack-wrap').hidden;
+  $('send-export-btn').disabled = needsAck && !$('review-fee-ack-checkbox').checked;
 }
 
 // ---------- Animated (BBQr) QR export ----------
@@ -663,6 +731,8 @@ function renderSendProgress() {
 }
 
 function initSendReviewPanel() {
+  $('review-fee-ack-checkbox').addEventListener('change', syncSendExportButton);
+
   $('send-review-cancel-btn').addEventListener('click', () => {
     stopQrAnimation();
     state.send = null;
@@ -718,7 +788,7 @@ function initSendCollectPanel() {
     setError('send-collect-error', null);
     try {
       const incoming = decodePsbt($('send-signed-input').value);
-      combineSignedPsbt(state.send.collectingTx, incoming);
+      state.send.collectingTx = combineSignedPsbt(state.send.collectingTx, incoming);
       $('send-signed-input').value = '';
       renderSendProgress();
     } catch (err) {
@@ -739,7 +809,7 @@ function initSendCollectPanel() {
   $('send-finalize-btn').addEventListener('click', async () => {
     setError('send-collect-error', null);
     try {
-      const result = finalizeSpend(state.send.collectingTx);
+      const result = finalizeSpend(state.send.collectingTx, state.wallet.m);
       $('send-result-txid').textContent = result.txid;
       $('send-result-hex').value = result.hex;
       await renderAnimatedQr($('send-result-qr'), $('send-result-qr-label'), hex.decode(result.hex), 'T');
@@ -765,7 +835,7 @@ function initSendResultPanel() {
   $('send-result-back-btn').addEventListener('click', async () => {
     stopQrAnimation();
     state.send = null;
-    await startScan({ m: state.wallet.m, cosigners: state.wallet.cosigners });
+    await startScan({ m: state.wallet.m, cosigners: state.wallet.cosigners, checksumVerified: state.wallet.checksumVerified });
   });
 }
 

@@ -1,4 +1,5 @@
 import * as btc from '@scure/btc-signer';
+import { hex } from '@scure/base';
 import { deriveMultisigPayment, numericPath } from './descriptor.js';
 
 /**
@@ -20,6 +21,21 @@ export function annotateMultisigPayment(wallet, chain, index, network) {
   return { script: payment.script, witnessScript: payment.witnessScript, address: payment.address, bip32Derivation };
 }
 
+// The real locking script the UTXO's own funding transaction actually pays,
+// read straight from the (already txid-hash-verified, per EsploraProvider
+// .unspent) nonWitnessUtxo - the one piece of this UTXO nothing upstream can
+// lie about.
+function realScriptOf(utxo) {
+  const raw = utxo.nonWitnessUtxo;
+  if (!raw) return null;
+  const decoded = raw instanceof Uint8Array
+    ? btc.RawTx.decode(raw)
+    : typeof raw === 'string'
+      ? btc.RawTx.decode(hex.decode(raw))
+      : raw;
+  return decoded.outputs[utxo.index]?.script ?? null;
+}
+
 /**
  * Turns raw Esplora UTXOs (see network.js's fetchUtxosForAddresses) into
  * PSBT-ready inputs, each carrying the witnessScript + bip32Derivation for
@@ -30,6 +46,20 @@ export function annotateUtxosForSpend(utxos, wallet, network) {
   return utxos.map((utxo) => {
     const { chain, index } = utxo.addressEntry;
     const payment = annotateMultisigPayment(wallet, chain, index, network);
+    // A UTXO reported by the network provider under address A's endpoint is
+    // trusted, by this app, to actually belong to address A - nothing
+    // upstream double-checks that. @scure/btc-signer's own checkScript would
+    // eventually catch a real mismatch too (witnessScript must hash to the
+    // real P2WSH program), but only much later, mid-signing, with a cryptic
+    // internal error. Checking it here, against the one address this code
+    // actually knows the UTXO is supposed to belong to, fails fast with a
+    // message that says what's actually wrong.
+    const realScript = realScriptOf(utxo);
+    if (realScript && !equalScripts(realScript, payment.script)) {
+      throw new Error(
+        `El UTXO recibido para la direccion ${payment.address} no coincide con el script que le corresponde - puede ser un problema con el proveedor de red. Probá "Actualizar" en el dashboard antes de reintentar.`
+      );
+    }
     return {
       txid: utxo.txid,
       index: utxo.index,
@@ -57,7 +87,8 @@ export function buildSpendTx({ wallet, utxos, destinationAddress, amountSats, fe
     bip69: true,
     createTx: true,
   });
-  if (!selected || sendMax) return selected;
+  if (!selected) return selected;
+  if (sendMax) return selected; // no separate change output when sending the whole balance
 
   // selectUTXO's own change output doesn't know about bip32Derivation - add
   // it after the fact by finding the output it created for changePayment.address.
@@ -67,7 +98,15 @@ export function buildSpendTx({ wallet, utxos, destinationAddress, amountSats, fe
       selected.tx.updateOutput(i, { bip32Derivation: changePayment.bip32Derivation });
     }
   }
-  return selected;
+  // Handed back alongside the tx so a reviewer (describeSpend) can identify
+  // the change output by its actual script, the same one just derived and
+  // compared above - not by trusting that a `bip32Derivation` field is
+  // present on an output, which is only true today because this tx was
+  // built entirely locally. That coupling would silently break if
+  // describeSpend were ever run on a PSBT that passed through anything
+  // external first (a returned, cosigner-touched PSBT can carry its own
+  // metadata on any output).
+  return { ...selected, changeScript: changePayment.script };
 }
 
 function equalScripts(a, b) {

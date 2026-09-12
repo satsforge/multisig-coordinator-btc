@@ -89,14 +89,14 @@ test('2-of-3 spend: build unsigned PSBT, two independent cosigners sign, coordin
   assert.equal(progress.ready, true);
   assert.equal(progress.perInput[0].count, 2);
 
-  const summary = describeSpend(combined, network);
+  const summary = describeSpend(combined, network, built.changeScript);
   assert.equal(summary.inputsTotal, 100_000n);
   assert.equal(summary.inputsTotal - summary.outputsTotal, summary.fee);
   assert.ok(summary.fee > 0n && summary.fee < 5000n);
   const changeOutput = summary.outputs.find((o) => o.isChange);
-  assert.ok(changeOutput, 'change output should be flagged via its bip32Derivation');
+  assert.ok(changeOutput, 'change output should be flagged by matching buildSpendTx\'s own changeScript');
 
-  const result = finalizeSpend(combined);
+  const result = finalizeSpend(combined, wallet.m);
   assert.equal(result.txid, built.tx.id);
   assert.ok(result.hex.length > 0);
 });
@@ -143,4 +143,103 @@ test('signatureProgress reports zero before any signature and reflects an alread
   const after = signatureProgress(built.tx, wallet.m);
   assert.equal(after.ready, true);
   assert.equal(after.perInput[0].finalized, true);
+});
+
+test('combineSignedPsbt rejects a forged signature (real bytes, wrong pubkey) instead of counting it toward the quorum', () => {
+  // Regression: Transaction.finalize()'s own p2ms path (and the old
+  // signatureProgress) only ever checked that a partialSig entry's pubkey
+  // was one of the witnessScript's own keys and counted how many such
+  // entries existed - never that the signature itself was valid. A
+  // malicious or buggy cosigner could staple a real DER signature (say,
+  // replayed from a different key's own valid signature) onto any pubkey
+  // in the script and it would count.
+  const fixtures = [
+    cosignerFixture('abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'),
+    cosignerFixture('zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong'),
+    cosignerFixture('legal winner thank year wave sausage worth useful legal winner thank yellow'),
+  ];
+  const wallet = buildWallet(fixtures, 2);
+  const { utxo } = fundReceive0(wallet, 100_000n);
+  const utxos = annotateUtxosForSpend([utxo], wallet, network);
+  const destinationAddress = btc.getAddress('wpkh', randomBytes(32), network);
+  const built = buildSpendTx({
+    wallet, utxos, destinationAddress, amountSats: 40_000n, feePerByte: 2n,
+    changeEntry: { chain: 1, index: 0 }, network, sendMax: false,
+  });
+  const unsignedPsbtB64 = encodePsbt(built.tx);
+
+  const nodeAChild = fixtures[0].priv.deriveChild(0).deriveChild(0);
+  const txA = decodePsbt(unsignedPsbtB64);
+  txA.signIdx(nodeAChild.privateKey, 0);
+
+  let coordinator = decodePsbt(unsignedPsbtB64);
+  coordinator = combineSignedPsbt(coordinator, txA);
+  assert.equal(signatureProgress(coordinator, wallet.m).perInput[0].count, 1);
+
+  // Forge a second "signature": cosigner A's real sig, replayed under
+  // cosigner B's pubkey. The bytes are a genuine, well-formed DER
+  // signature - just not one B ever produced for this input.
+  const forgedNode = fixtures[1].priv.deriveChild(0).deriveChild(0);
+  const realSigBytes = coordinator.getInput(0).partialSig[0][1];
+  const forged = decodePsbt(unsignedPsbtB64);
+  forged.updateInput(0, { partialSig: [[forgedNode.publicKey, realSigBytes]] });
+
+  assert.throws(() => combineSignedPsbt(coordinator, forged), /firma que no es valida/);
+  // The coordinator's own working PSBT must be untouched by the rejected attempt.
+  assert.equal(signatureProgress(coordinator, wallet.m).perInput[0].count, 1);
+  assert.throws(() => finalizeSpend(coordinator, wallet.m), /firmas validas/);
+});
+
+test('describeSpend flags an anomalously high fee, and only the real change output as change', () => {
+  const fixtures = [
+    cosignerFixture('abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'),
+    cosignerFixture('zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong'),
+  ];
+  const wallet = buildWallet(fixtures, 2);
+  const { utxo } = fundReceive0(wallet, 100_000n);
+  const utxos = annotateUtxosForSpend([utxo], wallet, network);
+  const destinationAddress = btc.getAddress('wpkh', randomBytes(32), network);
+  const changeEntry = { chain: 1, index: 0 };
+
+  const cheap = buildSpendTx({
+    wallet, utxos, destinationAddress, amountSats: 90_000n, feePerByte: 2n, changeEntry, network, sendMax: false,
+  });
+  assert.equal(describeSpend(cheap.tx, network, cheap.changeScript).feeWarning, false);
+
+  // A wildly high sats/vB rate (a mistyped custom fee, say) eats well over
+  // 10% of the 100_000-sat input in real fee.
+  const expensive = buildSpendTx({
+    wallet, utxos, destinationAddress, amountSats: 10_000n, feePerByte: 60n, changeEntry, network, sendMax: false,
+  });
+  assert.ok(expensive, 'buildSpendTx should still find enough funds at this rate');
+  const summary = describeSpend(expensive.tx, network, expensive.changeScript);
+  assert.equal(summary.feeWarning, true);
+  // Regression: isChange used to be "does this output carry a
+  // bip32Derivation field", which any PSBT touched outside this coordinator
+  // could attach to an arbitrary output. Matching the real changeScript
+  // buildSpendTx derived is tied to the actual output this build produced.
+  const changeOutputs = summary.outputs.filter((o) => o.isChange);
+  assert.equal(changeOutputs.length, 1);
+});
+
+test('annotateUtxosForSpend rejects a UTXO whose real script does not match the address it was reported under', () => {
+  // Regression: a network provider (or a bug in indexing) reporting a UTXO
+  // under the wrong address used to sail straight into the built PSBT -
+  // @scure/btc-signer's own checkScript would eventually catch the mismatch,
+  // but only much later, mid-signing, with a cryptic internal error.
+  const fixtures = [
+    cosignerFixture('abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'),
+    cosignerFixture('zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong'),
+  ];
+  const wallet = buildWallet(fixtures, 2);
+  const { utxo } = fundReceive0(wallet, 100_000n);
+  // Claim this same UTXO belongs to a *different* index than it really pays.
+  const mislabeled = { ...utxo, addressEntry: { chain: 0, index: 1 } };
+  assert.throws(
+    () => annotateUtxosForSpend([mislabeled], wallet, network),
+    /no coincide con el script/
+  );
+
+  // The correctly-labeled UTXO still works.
+  assert.doesNotThrow(() => annotateUtxosForSpend([utxo], wallet, network));
 });

@@ -138,40 +138,99 @@ para consultar saldos (igual que My Wallet BTC y BTC Airgap Bridge).
   especifica BIP67 y como hacen Sparrow/Coldcard/Bitcoin Core.
 - **Checksum de descriptores (BIP380)**: tanto al generar como al leer un
   descriptor se calcula/verifica su checksum de 8 caracteres. Un descriptor
-  pegado con un error de tipeo se rechaza explícitamente ("el checksum no
-  coincide") en vez de derivar direcciones silenciosamente incorrectas. La
-  implementación está verificada contra el vector de prueba oficial de la
-  propia especificación BIP380 (`raw(deadbeef)#89f8spxm`).
+  pegado con un checksum presente pero que no coincide se rechaza
+  explícitamente ("el checksum no coincide") en vez de derivar direcciones
+  silenciosamente incorrectas. La implementación está verificada contra el
+  vector de prueba oficial de la propia especificación BIP380
+  (`raw(deadbeef)#89f8spxm`). Un descriptor pegado **sin** checksum en
+  absoluto se sigue aceptando (algunas herramientas lo omiten, o alguien lo
+  retipea a mano) pero queda marcado como no verificado — el dashboard
+  muestra un aviso permanente mientras esa wallet siga cargada, en vez de
+  tratarlo en silencio como si estuviera confirmado.
+- **Rutas de derivación validadas estrictamente**: cada segmento tiene que
+  ser dígitos seguidos, opcionalmente, de un marcador de endurecimiento
+  (`h`/`'`) — nada más. Antes, un tipeo como `48x` se aceptaba como `48` sin
+  endurecer (perdiendo el apóstrofe silenciosamente), cambiando qué clave
+  se deriva sin ningún error.
 - **Fingerprint validado por formato**: se exige que sean 8 caracteres hex
   antes de aceptar un cosigner - no previene un fingerprint incorrecto en
   sí (eso requeriría la clave privada correspondiente para verificar), pero
   sí rechaza errores de tipeo obvios (longitud incorrecta, caracteres no
   hexadecimales) antes de que lleguen a un descriptor exportado.
-- **Cosigners duplicados rechazados**: en el modo manual, si dos cosigners
-  terminan con exactamente la misma clave pública, el armado de la wallet
-  se rechaza explícitamente — repetir una clave silenciosamente convertiría
-  un "M-de-N" en una wallet más débil de lo que el usuario cree tener.
+- **La profundidad del xpub se valida contra la ruta declarada**: un xpub
+  de cuenta BIP48 (`48'/coin'/account'/2'`) tiene que tener profundidad 4;
+  si alguien pega por error la clave maestra (u otra de profundidad
+  distinta) junto a esa ruta, se rechaza explícitamente en vez de armar una
+  wallet cuyas direcciones nunca van a poder firmarse por la vía normal —
+  el `bip32Derivation` que se exporta le diría a cualquier firmador que
+  derive desde un punto que no es el que realmente generó esa dirección.
+- **Cosigners duplicados rechazados, comparando la clave real**: si dos
+  cosigners resuelven a la misma clave pública, el armado de la wallet se
+  rechaza explícitamente — en modo manual y en modo descriptor por igual.
+  La comparación es sobre `node.publicKey`, no sobre el texto del xpub: la
+  misma clave re-serializada con otro prefijo SLIP132 (un tpub y un Vpub,
+  por ejemplo, son cadenas distintas para el mismo chain code y clave
+  pública) también se detecta.
 - **Cero persistencia**: no se usa `localStorage`, `sessionStorage`,
   cookies ni IndexedDB. Por eso la sección "Exportar configuración" es
   central al flujo, no un extra — sin ella, cerrar la pestaña significa
   volver a tipear cada xpub/fingerprint/ruta a mano.
-- **CSP con la misma excepción que sus hermanas watch-only**: `script-src`
-  restringido a un hash SHA-256 del único bloque de script inline;
-  `connect-src` apunta a `https://mempool.space` porque consultar saldo es
-  parte esencial de esta fase.
+- **CSP sin `unsafe-inline` en ningún lado**: `script-src` y `style-src`
+  restringidos por hash SHA-256 (del bloque de script y de la hoja de
+  estilos, respectivamente) en vez de la excepción genérica; `connect-src`
+  apunta a `https://mempool.space` porque consultar saldo es parte esencial
+  de esta fase, y `media-src 'self'` documenta explícitamente que el
+  escáner de cámara solo usa el stream local (`srcObject`), no una URL.
 - **Armar una transacción tampoco necesita ninguna clave privada**: desde
   seleccionar UTXOs hasta calcular la comisión y el cambio, todo usa
   `selectUTXO` de `@scure/btc-signer` sobre los mismos nodos públicos de
   siempre. La única acción que un cosigner hace FUERA de esta herramienta es
   firmar — acá nunca hay una clave privada que proteger.
+- **La comisión también se revisa antes de exportar**: si resulta
+  inusualmente alta en relación al total de entradas (una tarifa
+  personalizada mal tipeada, por ejemplo), la pantalla de revisión lo marca
+  y exige un check explícito antes de habilitar "Exportar". La estimación
+  de tarifa que falla al cargar ya no cae en silencio a un valor
+  hardcodeado — se informa el error y se puede reintentar o usar una
+  tarifa personalizada.
+- **El UTXO que reporta el proveedor de red se valida contra la dirección
+  real**: antes de anotarlo como input, se compara el script real de su
+  transacción de origen (ya verificado por hash de todos modos) contra el
+  script que la wallet deriva para la dirección bajo la que se reportó. Un
+  desajuste (proveedor con datos incorrectos, o un bug de indexado) se
+  rechaza con un mensaje específico en vez de propagarse hasta un error
+  críptico de la librería más adelante.
+- **Nunca se reutiliza en silencio una dirección ya usada**: si por algún
+  motivo no queda ninguna dirección sin usar disponible (no debería pasar,
+  dado el propio límite de huecos del escaneo), se avisa explícitamente en
+  vez de caer de vuelta a la primera dirección de la rama — que, en la
+  práctica, es casi siempre una ya usada.
+- **"Cambio" se identifica por el script real, no por metadata**: la
+  pantalla de revisión marca un output como cambio comparándolo contra el
+  script que `buildSpendTx` derivó y usó para ese output específico — no
+  por la sola presencia de un campo `bip32Derivation`, que en principio
+  podría venir de cualquier lado en un PSBT que pasó por fuera de esta
+  herramienta.
 - **Combinar PSBTs valida que sean de la misma transacción**: `combine()` (de
   `@scure/btc-signer`, BIP174) rechaza explícitamente un PSBT cuya
   transacción sin firmar no coincida con la que se está coordinando, en vez
   de mezclar datos de dos gastos distintos en silencio.
-- **Finalizar exige el quorum completo**: la transacción solo se arma cuando
-  cada input alcanzó M firmas válidas contra las pubkeys de su
-  `witnessScript` — no hay forma de finalizar (ni de exportar algo que
-  parezca finalizado) con menos firmas de las que la wallet requiere.
+- **Cada firma se verifica criptográficamente antes de contar para el
+  quorum**: ni `combine()` ni `finalize()` de `@scure/btc-signer` verifican
+  que una `partialSig` sea una firma válida — solo comprueban que su pubkey
+  declarada sea una de las del `witnessScript`, y cuentan cuántas hay.
+  Cualquier PSBT que vuelva de un cosigner (con error, corrupto, o
+  directamente malicioso) pasa primero por una verificación ECDSA propia
+  contra el sighash real del input (BIP143) antes de sumar a esa cuenta —
+  la combinación ocurre sobre una copia, así que una firma que no verifica
+  nunca llega a tocar el PSBT que se está coordinando. Esto es lo único
+  que impide que el coordinador arme y presente como lista una transacción
+  que la red rechazaría al transmitirla.
+- **Finalizar exige el quorum completo de firmas verificadas**: la
+  transacción solo se arma cuando cada input alcanzó M firmas
+  criptográficamente válidas — no simplemente M entradas presentes en el
+  PSBT — así que no hay forma de finalizar (ni de exportar algo que
+  parezca finalizado) con menos del quorum real que la wallet requiere.
 - **El escáner de cámara nunca guarda ni envía nada**: `getUserMedia` corre
   100% local — los cuadros de video se procesan en un `<canvas>` en memoria
   y se descartan; nada de eso sale de la pestaña ni pasa por la red (misma

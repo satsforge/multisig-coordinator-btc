@@ -91,7 +91,8 @@
 
 <section id="screen-dashboard" class="screen" hidden>
   <div class="panel">
-    <div class="actions-row" style="margin-top:0;">
+    <p id="dashboard-checksum-warning" class="notice notice-warning" hidden data-i18n="dashboard.checksumWarning"></p>
+    <div class="actions-row mt-0">
       <span id="dashboard-quorum-badge" class="badge badge-quorum"></span>
     </div>
     <div class="balance-card">
@@ -110,7 +111,7 @@
     <div class="receive-panel">
       <img id="receive-qr" alt="">
       <div class="mono" id="receive-address"></div>
-      <div class="actions-row" style="justify-content:center;">
+      <div class="actions-row justify-center">
         <button type="button" id="receive-copy-btn" class="btn-secondary btn-small" data-i18n="dashboard.receive.copy">Copiar direccion</button>
       </div>
     </div>
@@ -126,7 +127,7 @@
 
   <div class="panel">
     <h2 data-i18n="dashboard.addresses.title">Direcciones</h2>
-    <div class="actions-row" style="margin-top:0; margin-bottom: 0.5rem;">
+    <div class="actions-row mt-0 mb-sm">
       <button type="button" id="addresses-toggle-btn" class="btn-secondary btn-small"></button>
     </div>
     <ul class="address-list" id="address-list"></ul>
@@ -158,7 +159,7 @@
         <label>
           <input type="radio" name="fee-choice" id="fee-custom" value="custom">
           <span data-i18n="send.fee.custom">Personalizada (sats/vB)</span>
-          <input type="text" id="fee-custom-input" inputmode="decimal" style="width:80px;">
+          <input type="text" id="fee-custom-input" inputmode="decimal">
         </label>
       </fieldset>
 
@@ -178,8 +179,13 @@
       <dt data-i18n="send.review.outputsTotal">Total de salidas</dt><dd id="review-outputs-total"></dd>
       <dt data-i18n="send.review.fee">Comision</dt><dd id="review-fee"></dd>
     </dl>
-    <h2 data-i18n="send.review.outputs" style="font-size:14px;">Salidas</h2>
+    <h2 data-i18n="send.review.outputs" class="h2-compact">Salidas</h2>
     <ul class="output-list" id="review-outputs"></ul>
+    <p id="review-fee-warning" class="notice notice-warning" hidden data-i18n="send.review.feeWarning"></p>
+    <label class="checkbox-field" id="review-fee-ack-wrap" hidden>
+      <input type="checkbox" id="review-fee-ack-checkbox">
+      <span data-i18n="send.review.feeAck">Entiendo el riesgo y quiero exportar igual.</span>
+    </label>
     <div class="actions-row">
       <button type="button" id="send-export-btn" class="btn-primary" data-i18n="send.review.export">Exportar PSBT sin firmar</button>
       <button type="button" id="send-review-cancel-btn" class="btn-secondary" data-i18n="send.cancel">Cancelar</button>
@@ -216,7 +222,7 @@
     <p id="send-collect-error" class="error" hidden></p>
     <button type="button" id="send-collect-add-btn" class="btn-primary" data-i18n="send.collect.add">Agregar firma</button>
 
-    <h2 data-i18n="send.collect.progress.title" style="font-size:14px; margin-top:1.25rem;">Progreso</h2>
+    <h2 data-i18n="send.collect.progress.title" class="h2-compact mt-lg">Progreso</h2>
     <ul class="address-list" id="send-progress-list"></ul>
 
     <div class="actions-row">
@@ -259,7 +265,7 @@
     <video id="qr-scanner-video" playsinline muted></video>
     <div class="scan-log" id="qr-scanner-status"></div>
     <p id="qr-scanner-error" class="error" hidden></p>
-    <div class="actions-row" style="justify-content:center;">
+    <div class="actions-row justify-center">
       <button type="button" id="qr-scanner-cancel-btn" class="btn-secondary" data-i18n="qr.scanner.cancel">Cancelar</button>
     </div>
   </div>
