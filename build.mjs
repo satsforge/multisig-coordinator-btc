@@ -29,10 +29,14 @@ async function main() {
   const cssCode = cssResult.code.trim();
 
   const scriptHash = sha256b64(scriptCode);
+  const styleHash = sha256b64(cssCode);
   const csp = [
     "default-src 'none'",
     `script-src 'sha256-${scriptHash}'`,
-    "style-src 'unsafe-inline'",
+    // A hash instead of 'unsafe-inline': the app never sets inline style
+    // attributes or injects <style> at runtime, so there's no reason to
+    // allow arbitrary inline styles - only this exact, known stylesheet.
+    `style-src 'sha256-${styleHash}'`,
     "img-src 'self' data:",
     "font-src 'self'",
     // Phase 1 is watch-only: it needs mempool.space to check balances, same
@@ -44,6 +48,10 @@ async function main() {
     "base-uri 'none'",
     "form-action 'none'",
     "manifest-src 'none'",
+    // The camera scanner attaches the live stream via srcObject (not a
+    // media-src-governed URL fetch), but naming it explicitly documents
+    // intent rather than leaving it to default-src's implicit 'none'.
+    "media-src 'self'",
   ].join('; ');
 
   let html = readFileSync('index.src.html', 'utf8');
@@ -56,6 +64,7 @@ async function main() {
 
   console.log(`Built index.html (${(html.length / 1024).toFixed(1)} KiB)`);
   console.log(`script-src hash: sha256-${scriptHash}`);
+  console.log(`style-src hash: sha256-${styleHash}`);
 }
 
 main().catch((err) => {

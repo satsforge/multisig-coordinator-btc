@@ -42,10 +42,15 @@ export async function scanMultisigWallet(accountNodes, m, network, provider, onP
   return { addresses, totalBalance };
 }
 
+// scanMultisigWallet's own gap-limit loop never stops until it finds
+// GAP_LIMIT (20) *consecutive* unused addresses on a chain, so under normal
+// operation there are always unused ones to find here - falling back to
+// onChain[0] (routinely an already-used address, since index 0 is the very
+// first one the scan ever checked) would silently hand out a reused address
+// instead of surfacing that something violated that invariant.
 function firstUnusedOnChain(addresses, chain) {
   const onChain = addresses.filter((a) => a.chain === chain);
-  const firstUnused = onChain.find((a) => a.txCount === 0);
-  return firstUnused ?? onChain[0] ?? null;
+  return onChain.find((a) => a.txCount === 0) ?? null;
 }
 
 /** First unused receive address (chain 0), for the "Recibir" panel. */

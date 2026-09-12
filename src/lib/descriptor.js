@@ -1,5 +1,5 @@
 import { HDKey } from '@scure/bip32';
-import { base58check } from '@scure/base';
+import { base58check, hex } from '@scure/base';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { sortedMultisig } from '@scure/btc-signer';
 
@@ -102,6 +102,27 @@ const KNOWN_VERSIONS = {
 };
 const PRIVATE_VERSION = { false: 0x0488ade4, true: 0x04358394 };
 
+// The private-key counterpart of every prefix in KNOWN_VERSIONS above, used
+// ONLY to recognize one and name it in the error - never to build a node
+// from it. Without this table none of them reach the `node.privateKey` check
+// further down: their version bytes simply aren't in KNOWN_VERSIONS, so the
+// generic "prefijo no reconocido" fires first, which reads like a typo and
+// invites the user to retry. Pasting an xprv into a *coordinator* is the one
+// mistake in a multisig setup that must be unmistakable - at that point the
+// cosigner has handed their private key to whoever runs this screen.
+const KNOWN_PRIVATE_VERSIONS = {
+  0x0488ade4: 'xprv',
+  0x049d7878: 'yprv',
+  0x0295b005: 'Yprv',
+  0x04b2430c: 'zprv',
+  0x02aa7a99: 'Zprv',
+  0x04358394: 'tprv',
+  0x044a4e28: 'uprv',
+  0x024285b5: 'Uprv',
+  0x045f18bc: 'vprv',
+  0x02575048: 'Vprv',
+};
+
 export function parseExtendedPubkey(text, expectedTestnet) {
   const trimmed = text.trim();
   let payload;
@@ -116,6 +137,12 @@ export function parseExtendedPubkey(text, expectedTestnet) {
   const version = ((payload[0] << 24) | (payload[1] << 16) | (payload[2] << 8) | payload[3]) >>> 0;
   const known = KNOWN_VERSIONS[version];
   if (!known) {
+    const privateLabel = KNOWN_PRIVATE_VERSIONS[version];
+    if (privateLabel) {
+      throw new Error(
+        `Esto es una clave PRIVADA (${privateLabel}), no publica. Un coordinador solo necesita la clave publica extendida de cada cosigner - no pegues nunca una clave privada aca. Si ya la compartiste con alguien mas, considerala comprometida y movee los fondos.`
+      );
+    }
     throw new Error('Prefijo de clave publica extendida no reconocido.');
   }
   if (known.isTestnet !== expectedTestnet) {
@@ -138,19 +165,91 @@ export function parseExtendedPubkey(text, expectedTestnet) {
   return node;
 }
 
+/**
+ * Confirms a cosigner's xpub is actually the key its declared derivation
+ * path says it is - specifically, that the xpub's own on-chain `depth`
+ * matches how many segments the path has. Nothing else in this tool checks
+ * this: `deriveMultisigPayment` will happily derive `node.deriveChild(chain)
+ * .deriveChild(index)` from *any* node regardless of depth, producing real,
+ * usable-looking addresses either way. The problem only surfaces later - the
+ * `bip32Derivation` this tool exports tells every signer "derive
+ * fingerprint/path/chain/index from your own master key", so if the pasted
+ * xpub was actually the master (depth 0) while the path claims depth 4
+ * (BIP48's `48'/coin'/account'/2'`), the wallet's real addresses come from
+ * `master/chain/index` but every signer goes looking for
+ * `master/48'/coin'/account'/2'/chain/index` instead - a different key
+ * entirely. Funds sent to such a wallet cannot be spent through the normal
+ * flow, and nothing before this point would have said so.
+ */
+export function validateXpubDepth(node, pathText) {
+  const declaredDepth = parsePath(pathText).length;
+  if (node.depth !== declaredDepth) {
+    throw new Error(
+      `La clave publica tiene profundidad ${node.depth} pero la ruta declarada ("${pathText}") implica profundidad ${declaredDepth} - probablemente pegaste la clave equivocada (por ejemplo la maestra en vez de la de cuenta). Los fondos enviados a esta wallet no se van a poder firmar despues.`
+    );
+  }
+}
+
+/** parseExtendedPubkey + validateXpubDepth in one call - the shape every
+ * caller that also has a declared path (manual entry, or a parsed
+ * descriptor) should use instead of parseExtendedPubkey alone. */
+export function parseCosignerXpub(text, pathText, expectedTestnet) {
+  const node = parseExtendedPubkey(text, expectedTestnet);
+  validateXpubDepth(node, pathText);
+  return node;
+}
+
+/**
+ * Throws if two cosigners resolve to the exact same public key. Comparing
+ * the raw xpub *strings* (as this app briefly did) misses the case where
+ * the same key is simply re-serialized under a different SLIP132 prefix -
+ * a tpub and a Vpub can be cosmetically different strings for byte-for-byte
+ * the same chain code and public key, since the prefix is only advisory
+ * labeling (see parseExtendedPubkey's own comment on this). Comparing the
+ * parsed node's actual publicKey catches that; `sortedMultisig`'s own
+ * uniqPubkey check would too, but only after silently building the wallet
+ * with the duplicate, which is not the same as refusing it up front with a
+ * clear reason.
+ */
+export function assertNoDuplicateCosigners(cosigners) {
+  const seenBy = new Map(); // pubkeyHex -> the first cosigner's label
+  cosigners.forEach((c, i) => {
+    const pubHex = hex.encode(c.node.publicKey);
+    const label = c.name || `#${i + 1}`;
+    const first = seenBy.get(pubHex);
+    if (first) {
+      throw new Error(
+        `Los cosigners "${first}" y "${label}" son la misma clave (aunque esten escritas distinto) - repetir una clave convertiria un "M-de-N" en una wallet mas debil de lo que parece.`
+      );
+    }
+    seenBy.set(pubHex, label);
+  });
+}
+
 // ---------- Derivation path helpers ----------
 
 /** Parses "48h/0h/0h/2h" or "48'/0'/0'/2'" (with or without a leading "m/") into [48,true,0,true,0,true,2,true] pairs. */
+// The whole segment must be digits plus an optional hardened marker - no
+// trailing garbage. parseInt alone would silently accept "48x" as 48 (and
+// "0x10" as 0, stopping at the first non-digit character), turning one
+// mistyped character into a completely different, unhardened or
+// wrong-index derivation that then propagates into every exported
+// bip32Derivation and descriptor - with no error anywhere to catch it.
+const PATH_SEGMENT_RE = /^(\d+)([hH']?)$/;
+
 export function parsePath(pathText) {
   const cleaned = pathText.trim().replace(/^m\/?/i, '');
   if (!cleaned) return [];
   return cleaned.split('/').map((segment) => {
-    const hardened = /[h']$/i.test(segment);
-    const index = parseInt(hardened ? segment.slice(0, -1) : segment, 10);
-    if (!Number.isInteger(index) || index < 0 || index >= 0x80000000) {
+    const match = PATH_SEGMENT_RE.exec(segment);
+    if (!match) {
       throw new Error(`Segmento de ruta invalido: "${segment}"`);
     }
-    return { index, hardened };
+    const index = parseInt(match[1], 10);
+    if (!Number.isSafeInteger(index) || index < 0 || index >= 0x80000000) {
+      throw new Error(`Segmento de ruta invalido: "${segment}"`);
+    }
+    return { index, hardened: match[2] !== '' };
   });
 }
 
@@ -211,8 +310,16 @@ export function parseMultisigDescriptor(text) {
   const trimmed = text.trim().replace(/\s+/g, '');
   if (!trimmed) throw new Error('Pega un descriptor primero.');
 
+  // A present checksum is verified strictly - a mismatch always throws. One
+  // that's simply absent is still accepted (some tools omit it, or a human
+  // might retype the descriptor by hand), but the caller gets told so: with
+  // no checksum, a single altered/mistyped character anywhere in the body
+  // is otherwise indistinguishable from a correct descriptor, and this
+  // descriptor alone determines which addresses the wallet - and every
+  // cosigner's signer - will ever recognize as its own.
   const hashIdx = trimmed.indexOf('#');
-  if (hashIdx !== -1 && !descsumCheck(trimmed)) {
+  const checksumVerified = hashIdx !== -1;
+  if (checksumVerified && !descsumCheck(trimmed)) {
     throw new Error('El checksum del descriptor no coincide - revisalo, puede estar mal copiado.');
   }
 
@@ -240,7 +347,7 @@ export function parseMultisigDescriptor(text) {
   if (!cosigners.length) throw new Error('No se encontro ninguna clave en el descriptor.');
   if (m > cosigners.length) throw new Error(`M (${m}) no puede ser mayor que la cantidad de cosigners (${cosigners.length}).`);
 
-  return { m, n: cosigners.length, chain, cosigners };
+  return { m, n: cosigners.length, chain, cosigners, checksumVerified };
 }
 
 // ---------- Address derivation ----------

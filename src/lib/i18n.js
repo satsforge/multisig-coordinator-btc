@@ -67,6 +67,10 @@ const dict = {
   'scan.chain.change': { es: 'cambio', en: 'change' },
   'error.scanFailed': { es: 'No se pudo consultar la red: {msg}', en: 'Could not query the network: {msg}' },
 
+  'dashboard.checksumWarning': {
+    es: '<strong>Aviso:</strong> el descriptor con el que se armó esta wallet no traía checksum, así que no se pudo verificar que esté copiado sin errores. Un solo caracter alterado ahí puede derivar direcciones distintas a las que tus cosigners esperan. Si podés, volvé a exportarlo desde la fuente original (con checksum) y cargalo de nuevo.',
+    en: '<strong>Warning:</strong> the descriptor this wallet was built from had no checksum, so it could not be verified as copied correctly. A single altered character there can derive different addresses than your cosigners expect. If you can, re-export it from the original source (with a checksum) and load it again.',
+  },
   'dashboard.quorum': { es: '{m} de {n} firmas', en: '{m}-of-{n} signatures' },
   'dashboard.balance.label': { es: 'Saldo total', en: 'Total balance' },
   'dashboard.update': { es: 'Actualizar', en: 'Refresh' },
@@ -113,6 +117,11 @@ const dict = {
   'send.review.fee': { es: 'Comision', en: 'Fee' },
   'send.review.outputs': { es: 'Salidas', en: 'Outputs' },
   'send.review.change': { es: '(cambio, es de esta wallet)', en: '(change, belongs to this wallet)' },
+  'send.review.feeWarning': {
+    es: 'La comisión calculada es inusualmente alta en relación al total de entradas. Puede ser una tarifa personalizada mal ingresada. Revisala antes de exportar.',
+    en: 'The calculated fee is unusually high relative to the total inputs. It may be a mistyped custom rate. Review it before exporting.',
+  },
+  'send.review.feeAck': { es: 'Entiendo el riesgo y quiero exportar igual.', en: 'I understand the risk and want to export anyway.' },
   'send.review.export': { es: 'Exportar PSBT sin firmar', en: 'Export unsigned PSBT' },
 
   'send.export.title': { es: 'PSBT sin firmar', en: 'Unsigned PSBT' },
